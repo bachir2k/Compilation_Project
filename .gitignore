@@ -1,0 +1,28 @@
+# Compilé
+*.class
+*.jar
+!lib/javacc.jar
+
+# Fichiers générés par JavaCC
+grammar/*.java
+grammar/TokenMgrError.java
+grammar/ParseException.java
+grammar/SimpleCharStream.java
+
+# Sorties de test
+test/output/*
+!test/output/.gitkeep
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# OS
+.DS_Store
+Thumbs.db
+
+Roadmap_Projet_Compilation.pdf
+Projet_Compilation_Text_Processing.pdf
+javacc-tutorial.pdf
+javacc-5.0.tar.gz
