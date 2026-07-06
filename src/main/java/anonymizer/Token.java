@@ -1,11 +1,14 @@
 package anonymizer;
 
 /**
- * Représentation provisoire d'un token, en attendant l'intégration
- * du lexer généré par JavaCC (Partie 4, responsable M2).
+ * Représentation d'un token tel que produit par le lexer JavaCC de M2
+ * (grammar/Anonymizer.jj, paquetage anonymizer.lexer).
  *
- * Une fois la grammaire .jj prête, cette classe sera remplacée par
- * les tokens générés automatiquement (type Token de JavaCC / JJT).
+ * Cette classe reste volontairement simple (type + lexème) : elle sert
+ * uniquement à l'affichage/au comptage côté implémentation M3
+ * (Partie 7 - génération des tokens, Partie 9 - validation).
+ * La classification réelle est faite par le lexer généré ; voir
+ * {@link Anonymizer#generateTokens(String)}.
  */
 public class Token {
 
