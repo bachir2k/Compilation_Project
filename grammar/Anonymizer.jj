@@ -1,0 +1,385 @@
+/*
+ * ============================================================================
+ *  Anonymizer.jj  —  Spécification JavaCC (Membre 2)
+ *  Projet de Compilation — Anonymisation automatique de documents textuels
+ *  M1 GLSI — ESP Dakar — 2025-2026
+ * ----------------------------------------------------------------------------
+ *  Ce fichier couvre les responsabilités du Membre 2 :
+ *    Partie 4 — Analyse lexicale       : définition des tokens
+ *               EMAIL, PHONE, DATE, AMOUNT, TITLE, PERSON, WORD, NUMBER, OTHER
+ *    Partie 5 — Maximal Munch          : l'ordre de déclaration ci-dessous sert
+ *               à départager les égalités de longueur (voir docs/M2_partie5).
+ *    Partie 6 — Analyse syntaxique     : productions Document / Element /
+ *               PersonName acceptant toute suite valide de tokens.
+ *    Partie 8 — Instrumentation        : la méthode main() affiche, pour chaque
+ *               token reconnu, son TYPE et son LEXÈME.
+ *
+ *  Génération :   java -cp lib/javacc.jar javacc -OUTPUT_DIRECTORY=grammar grammar/Anonymizer.jj
+ *  Compilation :  javac -d out grammar/*.java
+ *  Exécution :    java -cp out anonymizer.lexer.AnonymizerParser <fichier> [sortie]
+ *
+ *  NB : pour préserver le texte à l'identique (anonymisation), AUCUN caractère
+ *  n'est ignoré (pas de SKIP). Les espaces, la ponctuation et les retours à la
+ *  ligne sont capturés par le token OTHER et restitués tels quels.
+ * ============================================================================
+ */
+
+options {
+  STATIC        = false;   // instances multiples (une par passe : instrumentation + anonymisation)
+  UNICODE_INPUT = true;    // gestion des lettres accentuées (é, è, à, ç, ï, û…)
+  IGNORE_CASE   = false;   // la casse est significative (majuscule => nom propre potentiel)
+}
+
+PARSER_BEGIN(AnonymizerParser)
+
+package anonymizer.lexer;
+
+import java.io.IOException;
+import java.io.StringReader;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.util.Arrays;
+import java.util.HashSet;
+import java.util.Locale;
+import java.util.Set;
+
+/**
+ * Analyseur lexical + syntaxique généré par JavaCC (livrable Membre 2).
+ *
+ * <p>La classe fournit trois services, tous pilotés par le lexer généré :
+ * <ul>
+ *   <li>{@link #instrument(String)}  — Partie 8 : affiche type + lexème ;</li>
+ *   <li>{@code Document()}           — Partie 6 : valide la suite de tokens ;</li>
+ *   <li>{@link #anonymize(String)}   — démonstration : remplace les tokens
+ *       sensibles par leurs marqueurs, en s'appuyant sur la classification
+ *       lexicale. (La politique définitive d'anonymisation reste Partie 7, M3.)</li>
+ * </ul>
+ */
+public class AnonymizerParser {
+
+  /* ----------------------------------------------------------------------
+   * Mots outils français fréquemment en tête de phrase (commençant donc par
+   * une majuscule sans être des noms propres). Sert à lever l'ambiguïté
+   * « majuscule en début de phrase » évoquée en Partie 1.3 : un token PERSON
+   * situé en début de phrase et présent dans cette liste est conservé tel quel
+   * au lieu d'être anonymisé. Voir docs/M2_partie5_maximal_munch.md.
+   * -------------------------------------------------------------------- */
+  private static final Set<String> MOTS_OUTILS = new HashSet<String>(Arrays.asList(
+      "le","la","les","l","un","une","des","du","de","d",
+      "ce","cet","cette","ces","celui","celle","ceux",
+      "son","sa","ses","mon","ma","mes","ton","ta","tes",
+      "notre","nos","votre","vos","leur","leurs",
+      "il","elle","ils","elles","on","nous","vous","je","tu",
+      "ceci","cela","pour","par","avec","sans","dans","sur","sous",
+      "après","avant","pendant","depuis","chez","vers","entre",
+      "aujourd","hier","demain","bienvenue","bonjour","merci","veuillez",
+      "envoyer","envoyez","contactez","contacter","joindre",
+      "numéro","autre","autres","élève","cher","chère",
+      "et","ou","mais","donc","car","ni","or","si","que","qui","quoi","dont",
+      "au","aux","en","ne","pas","plus","très","bien","aussi","alors"
+  ));
+
+  /* ====================================================================
+   *  Partie 8 — Instrumentation
+   *  Affiche, pour chaque token reconnu, son type et son lexème.
+   *  Les tokens purement « blancs » (espaces, retours à la ligne) ne sont
+   *  pas listés afin de garder la sortie lisible ; ils sont bien produits
+   *  par le lexer et restitués lors de l'anonymisation.
+   * ==================================================================== */
+  public static int instrument(String texte) throws Exception {
+    AnonymizerParserTokenManager lexer = newLexer(texte);
+    int nb = 0;
+    Token t;
+    while ((t = lexer.getNextToken()).kind != EOF) {
+      if (t.image.trim().isEmpty()) {
+        continue; // espace / tabulation / saut de ligne : non listé
+      }
+      System.out.println("  [" + nomType(t.kind) + " : \"" + t.image + "\"]");
+      nb++;
+    }
+    return nb;
+  }
+
+  /* ====================================================================
+   *  Anonymisation (démonstration pilotée par la classification lexicale).
+   *  Règles :
+   *    EMAIL  -> <EMAIL>      PHONE -> <TELEPHONE>   DATE -> <DATE>
+   *    AMOUNT -> <MONTANT>    PERSON-> <PERSONNE>
+   *    TITLE  : civilité supprimée avec son espace (Monsieur, Madame, M. …)
+   *    WORD / NUMBER / OTHER : conservés tels quels.
+   *  Un PERSON en début de phrase appartenant à MOTS_OUTILS est conservé.
+   * ==================================================================== */
+  public static String anonymize(String texte) throws Exception {
+    StringBuilder sb = new StringBuilder();
+    AnonymizerParserTokenManager lexer = newLexer(texte);
+
+    boolean debutPhrase = true;   // on est en tête de phrase
+    boolean contexteNom = false;  // on est dans une séquence de noms propres
+    boolean sauterEspace = false; // supprimer le prochain séparateur (après une civilité)
+
+    Token t;
+    while ((t = lexer.getNextToken()).kind != EOF) {
+      String img = t.image;
+      switch (t.kind) {
+        case EMAIL:
+          sb.append("<EMAIL>");     debutPhrase = false; contexteNom = false; sauterEspace = false; break;
+        case PHONE:
+          sb.append("<TELEPHONE>"); debutPhrase = false; contexteNom = false; sauterEspace = false; break;
+        case DATE:
+          sb.append("<DATE>");      debutPhrase = false; contexteNom = false; sauterEspace = false; break;
+        case AMOUNT:
+          sb.append("<MONTANT>");   debutPhrase = false; contexteNom = false; sauterEspace = false; break;
+
+        case TITLE:
+          // Civilité : supprimée, et l'espace qui suit également.
+          debutPhrase = false; contexteNom = true; sauterEspace = true; break;
+
+        case PERSON:
+          if (debutPhrase && !contexteNom
+              && MOTS_OUTILS.contains(img.toLowerCase(Locale.ROOT))) {
+            sb.append(img);              // mot outil en tête de phrase : conservé
+          } else {
+            sb.append("<PERSONNE>");     // nom propre : anonymisé
+            contexteNom = true;
+          }
+          debutPhrase = false; sauterEspace = false; break;
+
+        case WORD:
+        case NUMBER:
+          sb.append(img); debutPhrase = false; contexteNom = false; sauterEspace = false; break;
+
+        default: // OTHER : espaces, ponctuation, retours à la ligne
+          boolean blanc = img.trim().isEmpty();
+          if (blanc && sauterEspace) {
+            sauterEspace = false;        // on avale le séparateur qui suivait la civilité
+          } else {
+            sb.append(img);
+            if (!blanc) { sauterEspace = false; }
+          }
+          // Fin de phrase => la prochaine majuscule est en tête de phrase.
+          if (img.indexOf('.') >= 0 || img.indexOf('!') >= 0
+              || img.indexOf('?') >= 0 || img.indexOf('\n') >= 0) {
+            debutPhrase = true; contexteNom = false;
+          }
+          break;
+      }
+    }
+    return sb.toString();
+  }
+
+  /* -------------------- utilitaires -------------------- */
+
+  private static AnonymizerParserTokenManager newLexer(String texte) {
+    return new AnonymizerParserTokenManager(
+        new SimpleCharStream(new StringReader(texte)));
+  }
+
+  /** Nom lisible d'un type de token (pour l'instrumentation). */
+  static String nomType(int kind) {
+    switch (kind) {
+      case EMAIL:  return "EMAIL";
+      case PHONE:  return "TELEPHONE";
+      case DATE:   return "DATE";
+      case AMOUNT: return "MONTANT";
+      case TITLE:  return "TITRE";
+      case PERSON: return "PERSONNE";
+      case WORD:   return "MOT";
+      case NUMBER: return "NOMBRE";
+      default:     return "AUTRE";
+    }
+  }
+
+  /* ============================ main ============================ */
+  public static void main(String[] args) throws Exception {
+    if (args.length < 1) {
+      System.err.println("Usage : java anonymizer.lexer.AnonymizerParser <fichier_entree> [fichier_sortie]");
+      System.exit(1);
+    }
+
+    Path entree = Paths.get(args[0]);
+    String contenu = new String(Files.readAllBytes(entree), StandardCharsets.UTF_8);
+
+    // ---- Partie 8 : instrumentation ----
+    System.out.println("=== Analyse lexicale — instrumentation (type : lexeme) ===");
+    System.out.println("Fichier : " + entree.getFileName());
+    int nb = instrument(contenu);
+    System.out.println("Total : " + nb + " tokens significatifs.");
+    System.out.println();
+
+    // ---- Partie 6 : validation syntaxique ----
+    try {
+      AnonymizerParser parser = new AnonymizerParser(new StringReader(contenu));
+      parser.Document();
+      System.out.println("=== Analyse syntaxique : OK (suite de tokens valide) ===");
+    } catch (ParseException pe) {
+      System.out.println("=== Analyse syntaxique : ÉCHEC — " + pe.getMessage() + " ===");
+    }
+    System.out.println();
+
+    // ---- Démonstration : anonymisation ----
+    String resultat = anonymize(contenu);
+    System.out.println("=== Texte anonymisé ===");
+    System.out.println(resultat);
+
+    if (args.length >= 2) {
+      Path sortie = Paths.get(args[1]);
+      if (sortie.getParent() != null) { Files.createDirectories(sortie.getParent()); }
+      Files.write(sortie, resultat.getBytes(StandardCharsets.UTF_8));
+      System.out.println("Fichier de sortie écrit : " + sortie);
+    }
+  }
+}
+
+PARSER_END(AnonymizerParser)
+
+
+/* ============================================================================
+ *  PARTIE 4 — ANALYSE LEXICALE : définition des tokens
+ * ----------------------------------------------------------------------------
+ *  Tokens auxiliaires (privés, préfixe #). Ils ne produisent pas de token à
+ *  eux seuls mais servent de briques aux règles ci-dessous.
+ * ==========================================================================*/
+TOKEN :
+{
+  < #DIGIT : ["0"-"9"] >
+
+  // Lettre MAJuscule : A-Z + majuscules accentuées usuelles (échappements
+  // unicode pour être indépendant de l'encodage du fichier .jj).
+| < #MAJ : [ "A"-"Z",
+             "À","Á","Â","Ã","Ä","Ç",
+             "È","É","Ê","Ë",
+             "Ì","Í","Î","Ï",
+             "Ñ","Ò","Ó","Ô","Õ","Ö",
+             "Ù","Ú","Û","Ü","Ý" ] >
+
+  // Lettre MINuscule : a-z + minuscules accentuées usuelles.
+| < #MIN : [ "a"-"z",
+             "à","á","â","ã","ä","ç",
+             "è","é","ê","ë",
+             "ì","í","î","ï",
+             "ñ","ò","ó","ô","õ","ö",
+             "ù","ú","û","ü","ý","ÿ" ] >
+
+| < #LET : <MAJ> | <MIN> >
+
+  // Noms de mois (dates « en toutes lettres »).
+| < #MONTH : "janvier" | "février" | "fevrier" | "mars" | "avril" | "mai"
+           | "juin" | "juillet" | "août" | "aout" | "septembre"
+           | "octobre" | "novembre" | "décembre" | "decembre" >
+}
+
+/* ----------------------------------------------------------------------------
+ *  Tokens SENSIBLES + neutres. L'ORDRE DE DÉCLARATION est significatif : en cas
+ *  d'égalité de longueur (Maximal Munch), JavaCC retient la règle déclarée en
+ *  premier. Voir docs/M2_partie5_maximal_munch.md.
+ * ==========================================================================*/
+TOKEN :
+{
+  /* -------- EMAIL : partie-locale @ domaine (au moins un point) -------- */
+  < EMAIL :
+      ( <LET> | <DIGIT> | "." | "_" | "%" | "+" | "-" | "'" )+
+      "@"
+      ( <LET> | <DIGIT> | "-" )+ ( "." ( <LET> | <DIGIT> | "-" )+ )+
+  >
+
+  /* -------- TELEPHONE : formats sénégalais et international -------- */
+  /* soit +221 optionnel puis 4 groupes 2-3-2-2 séparés par espace ou tiret, */
+  /* soit 9 chiffres accolés (ex. 781234567).                                */
+| < PHONE :
+      ( "+" <DIGIT> <DIGIT> <DIGIT> ( " " )? )?
+      <DIGIT> <DIGIT> ( " " | "-" )
+      <DIGIT> <DIGIT> <DIGIT> ( " " | "-" )
+      <DIGIT> <DIGIT> ( " " | "-" )
+      <DIGIT> <DIGIT>
+  |
+      <DIGIT> <DIGIT> <DIGIT> <DIGIT> <DIGIT> <DIGIT> <DIGIT> <DIGIT> <DIGIT>
+  >
+
+  /* -------- DATE : JJ/MM/AAAA, JJ-MM-AAAA, AAAA/MM/JJ, « 5 juin 2026 » -------- */
+| < DATE :
+      <DIGIT> ( <DIGIT> )? ( "/" | "-" ) <DIGIT> ( <DIGIT> )? ( "/" | "-" ) <DIGIT> <DIGIT> <DIGIT> <DIGIT>
+  |   <DIGIT> <DIGIT> <DIGIT> <DIGIT> ( "/" | "-" ) <DIGIT> ( <DIGIT> )? ( "/" | "-" ) <DIGIT> ( <DIGIT> )?
+  |   <DIGIT> ( <DIGIT> )? " " <MONTH> " " <DIGIT> <DIGIT> <DIGIT> <DIGIT>
+  >
+
+  /* -------- MONTANT : nombre (séparateurs de milliers) + devise FCFA -------- */
+  /* La devise (obligatoire) lève l'ambiguïté avec un simple NOMBRE ou un       */
+  /* numéro de téléphone (ex. « 250000 FCFA », « 1 500 000 FCFA », « 75.000 FCFA »). */
+| < AMOUNT :
+      <DIGIT> ( <DIGIT> )* ( ( " " | "." ) <DIGIT> <DIGIT> <DIGIT> )*
+      ( " " )? ( "FCFA" | "F" ( " " )? "CFA" | "CFA" )
+  >
+
+  /* -------- CIVILITÉ : titre honorifique (supprimé à l'anonymisation) -------- */
+| < TITLE :
+      "Monsieur" | "Madame" | "Mademoiselle" | "Mlle" | "Mlle." | "Mme" | "Mme."
+    | "M." | "MM." | "Dr" | "Dr." | "Docteur" | "Professeur" | "Pr." | "Maître" | "Me."
+  >
+
+  /* -------- PERSONNE : nom propre = 1 majuscule suivie de minuscules -------- */
+| < PERSON : <MAJ> ( <MIN> )+ >
+
+  /* -------- MOT : mot ordinaire (apostrophe/tiret internes autorisés) -------- */
+  /* Placé APRÈS PERSON : « Amadou » (égalité de longueur) est classé PERSON,   */
+  /* tandis que « Aujourd'hui » (plus long) est classé MOT grâce au Maximal Munch. */
+| < WORD : <LET> ( <LET> | "'" | "-" )* >
+
+  /* -------- NOMBRE : entier isolé non reconnu comme date/téléphone/montant -------- */
+| < NUMBER : ( <DIGIT> )+ >
+
+  /* -------- AUTRE : tout autre caractère (espace, ponctuation, saut de ligne) -------- */
+  /* Catch-all d'un seul caractère : garantit que le lexer couvre TOUT le texte. */
+| < OTHER : ~[] >
+}
+
+
+/* ============================================================================
+ *  PARTIE 6 — ANALYSE SYNTAXIQUE : grammaire des suites valides de tokens
+ * ----------------------------------------------------------------------------
+ *  Document   ::= ( Element )* <EOF>
+ *  Element    ::= <EMAIL> | <PHONE> | <DATE> | <AMOUNT>
+ *               | PersonName | <WORD> | <NUMBER> | <OTHER>
+ *  PersonName ::= <TITLE> <PERSON> ( <PERSON> )*   (civilité + nom composé)
+ *               | <PERSON> ( <PERSON> )*           (nom composé)
+ *               | <TITLE>                          (civilité isolée)
+ *
+ *  Un document est une suite quelconque d'éléments : la grammaire accepte tout
+ *  texte, tout en regroupant explicitement les noms propres consécutifs
+ *  (éventuellement précédés d'une civilité) en une entité PersonName.
+ * ==========================================================================*/
+
+/** Axiome : un document est une suite d'éléments terminée par la fin de fichier. */
+void Document() :
+{}
+{
+  ( Element() )* <EOF>
+}
+
+/** Un élément : token sensible, groupe de noms propres, ou token neutre. */
+void Element() :
+{}
+{
+    <EMAIL>
+  | <PHONE>
+  | <DATE>
+  | <AMOUNT>
+  | PersonName()
+  | <WORD>
+  | <NUMBER>
+  | <OTHER>
+}
+
+/**
+ * Entité « nom de personne » : une civilité suivie d'un ou plusieurs noms
+ * propres, une suite de noms propres, ou une civilité isolée.
+ * Le LOOKAHEAD départage « civilité + nom » de « civilité seule ».
+ */
+void PersonName() :
+{}
+{
+    LOOKAHEAD( <TITLE> <PERSON> ) <TITLE> <PERSON> ( LOOKAHEAD(1) <PERSON> )*
+  | <PERSON> ( LOOKAHEAD(1) <PERSON> )*
+  | <TITLE>
+}

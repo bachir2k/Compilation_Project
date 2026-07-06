@@ -1,0 +1,34 @@
+=== Analyse lexicale — instrumentation (type : lexeme) ===
+Fichier : test1_exemple_sujet.txt
+  [TITRE : "Monsieur"]
+  [PERSONNE : "Amadou"]
+  [PERSONNE : "Diallo"]
+  [MOT : "est"]
+  [MOT : "joignable"]
+  [MOT : "au"]
+  [TELEPHONE : "77 123 45 67"]
+  [AUTRE : "."]
+  [PERSONNE : "Son"]
+  [MOT : "adresse"]
+  [MOT : "est"]
+  [EMAIL : "amadou.diallo@gmail.com"]
+  [AUTRE : "."]
+  [PERSONNE : "Le"]
+  [MOT : "paiement"]
+  [MOT : "de"]
+  [MONTANT : "250000 FCFA"]
+  [MOT : "a"]
+  [MOT : "été"]
+  [MOT : "effectué"]
+  [MOT : "le"]
+  [DATE : "15/06/2026"]
+  [AUTRE : "."]
+Total : 23 tokens significatifs.
+
+=== Analyse syntaxique : OK (suite de tokens valide) ===
+
+=== Texte anonymisé ===
+<PERSONNE> <PERSONNE> est joignable au <TELEPHONE>.
+Son adresse est <EMAIL>.
+Le paiement de <MONTANT> a été effectué le <DATE>.
+
